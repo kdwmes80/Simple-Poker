@@ -1,25 +1,32 @@
 import streamlit as st
 import eval7
 
-# --- 1. 유틸리티 함수 ---
-def calculate_poker_stats(hero_hand, board):
+# --- 1. 정밀 승률 계산 및 가이드 데이터 ---
+def calculate_precise_stats(hero_hand, board, iters=3000): # 정밀도 향상을 위해 반복 횟수 증가
     try:
+        if len(hero_hand) < 2: return 0, 0
         hero_c = [eval7.Card(c) for c in hero_hand]
         board_c = [eval7.Card(c) for c in board]
-        win_count, iters = 0, 1000 
+        win_count = 0
+        
         for _ in range(iters):
             deck = eval7.Deck()
             for c in hero_c + board_c:
                 if c in deck.cards: deck.cards.remove(c)
             deck.shuffle()
+            
             opp_cards = deck.deal(2)
             temp_board = board_c + deck.deal(5 - len(board_c))
+            
             h_s = eval7.evaluate(hero_c + temp_board)
             o_s = eval7.evaluate(opp_cards + temp_board)
+            
             if h_s > o_s: win_count += 1
             elif h_s == o_s: win_count += 0.5
-        
+            
         equity = (win_count / iters) * 100
+        
+        # 아우츠 계산 (턴/리버가 남은 경우)
         outs = 0
         if len(board_c) < 5:
             current_score = eval7.evaluate(hero_c + board_c)
@@ -32,147 +39,157 @@ def calculate_poker_stats(hero_hand, board):
         return equity, outs
     except: return 0, 0
 
+# 포지션별 권장 오픈 레인지 (GTO 기반 요약)
+def get_open_range_guide(position):
+    ranges = {
+        "UTG": "TOP 10-12% (77+, ATS+, KQs, AJo+)",
+        "HJ": "TOP 15-18% (55+, A8s+, KTs+, QJs, ATs+)",
+        "CO": "TOP 25-30% (22+, A2s+, K8s+, Q9s+, J9s+, T9s)",
+        "BTN": "TOP 40-50% (Any Ace, Any Pair, K2s+, Q5s+, J7s+, Connectors)",
+        "SB": "TOP 40-45% (신중한 플레이 필요, BB에 따라 변동)",
+        "BB": "방어 위주 (상대 오픈 사이즈에 따라 결정)"
+    }
+    return ranges.get(position, "표준 레인지 가이드 없음")
+
 def sort_cards(card_list):
-    if not card_list: return []
     rank_order = {'A':14, 'K':13, 'Q':12, 'J':11, 'T':10, '9':9, '8':8, '7':7, '6':6, '5':5, '4':4, '3':3, '2':2}
     return sorted(card_list, key=lambda x: rank_order.get(x[0], 0), reverse=True)
 
-# --- 2. UI 스타일 (간결함 강조) ---
-st.set_page_config(page_title="Poker Pro Master", layout="centered")
+# --- 2. UI 스타일 및 세션 관리 ---
+st.set_page_config(page_title="Poker Strategy Master Pro", layout="centered")
 
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 6px; font-weight: bold; height: 3em; font-size: 14px; }
-    .folded-box { opacity: 0.3 !important; filter: grayscale(100%) !important; pointer-events: none; border: 1px solid #444; padding: 5px; border-radius: 8px; }
-    .active-box { border: 1px solid #3498db; padding: 5px; border-radius: 8px; margin-bottom: 5px; }
-    .status-bar { 
-        background-color: #1e2129; padding: 12px; border-radius: 10px; 
-        border-bottom: 3px solid #3498db; margin-bottom: 15px; position: sticky; top: 0; z-index: 999;
-    }
-    .card-tag { background: #34495e; padding: 3px 8px; border-radius: 4px; margin-right: 4px; color: #fff; font-family: monospace; }
-    .suit-container { background: #262730; padding: 10px; border-radius: 10px; margin-bottom: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
+# 초기 세션 설정 (누락 방지)
+init_keys = {
+    'step': 1, 'hero_hand': [], 'board': [], 'folded': [], 
+    'villain_actions': {}, 'stage': "Pre-flop", 
+    'icm_mode': False, 'pushfold_mode': False, 'hero_pos': "BTN"
+}
+for k, v in init_keys.items():
+    if k not in st.session_state: st.session_state[k] = v
 
-# 세션 상태 초기화
-states = ['step', 'folded', 'dealer', 'hero_hand', 'board', 'stage', 'last_action', 'icm_mode', 'pushfold_mode']
-defaults = [1, [], None, [], [], "Pre-flop", "None", False, False]
-for s, d in zip(states, defaults):
-    if s not in st.session_state: st.session_state[s] = d
-
-# --- 3. 상단 상태바 ---
-if st.session_state.step >= 3:
-    h_s, b_s = sort_cards(st.session_state.hero_hand), sort_cards(st.session_state.board)
-    st.markdown(f"""
-        <div class="status-bar">
-            <span style="font-size: 0.8em; color: #3498db;">HAND:</span> {" ".join([f"<span class='card-tag'>{c}</span>" for c in h_s]) if h_s else "---"} 
-            <span style="margin-left:10px; font-size: 0.8em; color: #3498db;">BOARD:</span> {" ".join([f"<span class='card-tag'>{c}</span>" for c in b_s]) if b_s else "---"}
-        </div>
-    """, unsafe_allow_html=True)
-
-# --- 4. 카드 선택 함수 (문양 선택 시에만 숫자 노출) ---
-def card_picker(label, target_list, max_count):
+# --- 3. 카드 선택 컴포넌트 ---
+def card_picker_pro(label, target_list, max_count):
+    st.write(f"**{label}**")
     suits = {'♠':'s', '♥':'h', '◆':'d', '♣':'c'}
     ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
-    sel_key = f"active_suit_{label}"
+    sel_key = f"pro_suit_{label}"
     
-    st.write(f"**{label}** ({len(target_list)}/{max_count})")
-    
-    # 문양 선택 가로 버튼
-    scols = st.columns(4)
+    cols = st.columns(4)
     for i, (s_name, s_val) in enumerate(suits.items()):
-        if scols[i].button(s_name, key=f"s_{label}_{s_val}", 
-                           type="primary" if st.session_state.get(sel_key) == s_val else "secondary"):
-            st.session_state[sel_key] = s_val
-            st.rerun()
-
-    # 문양이 선택된 경우에만 숫자판 등장 (레이아웃 간소화)
+        if cols[i].button(s_name, key=f"s_{label}_{s_val}", type="primary" if st.session_state.get(sel_key) == s_val else "secondary"):
+            st.session_state[sel_key] = s_val; st.rerun()
+            
     chosen_suit = st.session_state.get(sel_key)
     if chosen_suit:
-        st.markdown("<div class='suit-container'>", unsafe_allow_html=True)
         all_used = st.session_state.hero_hand + st.session_state.board
-        for row_ranks in [ranks[:7], ranks[7:]]:
-            cols = st.columns(7)
-            for i, r in enumerate(row_ranks):
-                card_code = f"{r}{chosen_suit}"
-                is_sel = card_code in target_list
-                if cols[i].button(r, key=f"r_{label}_{card_code}", 
-                                  disabled=card_code in all_used and not is_sel,
-                                  type="primary" if is_sel else "secondary"):
-                    if is_sel: target_list.remove(card_code)
-                    elif len(target_list) < max_count: target_list.append(card_code)
+        for row in [ranks[:7], ranks[7:]]:
+            r_cols = st.columns(7)
+            for i, r in enumerate(row):
+                card = f"{r}{chosen_suit}"
+                is_sel = card in target_list
+                if r_cols[i].button(r, key=f"r_{label}_{card}", disabled=card in all_used and not is_sel, type="primary" if is_sel else "secondary"):
+                    if is_sel: target_list.remove(card)
+                    elif len(target_list) < max_count: target_list.append(card)
                     st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
 
-# --- 5. 메인 흐름 ---
+# --- 4. 메인 단계별 로직 ---
+
+# 상단 상태 정보 바
+if st.session_state.step >= 3:
+    h_s, b_s = sort_cards(st.session_state.hero_hand), sort_cards(st.session_state.board)
+    st.info(f"📍 포지션: **{st.session_state.hero_pos}** | 핸드: **{' '.join(h_s)}** | 보드: **{' '.join(b_s)}**")
+
 if st.session_state.step == 1:
-    st.title("🏟️ 환경 설정")
-    st.session_state.total = st.select_slider("인원", options=range(2, 11), value=9)
+    st.title("🏟️ 1. 포지션 및 환경 설정")
+    total_p = st.select_slider("테이블 인원", options=range(2, 10), value=9)
+    st.session_state.total = total_p
+    
+    if total_p <= 6: positions = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
+    else: positions = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    
+    st.session_state.hero_pos = st.selectbox("나의 포지션", positions[:total_p])
+    
     c1, c2 = st.columns(2)
-    st.session_state.icm_mode = c1.toggle("🏆 ICM")
-    st.session_state.pushfold_mode = c2.toggle("⚔️ P/F")
-    if st.button("시작 ➡️"): st.session_state.step = 2; st.rerun()
+    st.session_state.icm_mode = c1.toggle("🏆 ICM 분석 모드")
+    st.session_state.pushfold_mode = c2.toggle("⚔️ Push/Fold 모드")
+    
+    # [추가] 포지션 가이드 미리보기
+    st.caption(f"💡 현재 포지션({st.session_state.hero_pos}) 오픈 가이드: {get_open_range_guide(st.session_state.hero_pos)}")
+    
+    if st.button("설정 완료 ➡️"): st.session_state.step = 2; st.rerun()
 
 elif st.session_state.step == 2:
-    st.title("🪑 테이블")
-    for i in range(0, st.session_state.total, 3):
-        cols = st.columns(3)
-        for j in range(3):
-            idx = i + j
-            if idx < st.session_state.total:
-                with cols[j]:
-                    is_f, is_d = idx in st.session_state.folded, st.session_state.dealer == idx
-                    st.markdown(f"<div class='{'folded-box' if is_f else 'active-box'}'>", unsafe_allow_html=True)
-                    st.write(f"**{'Hero' if idx == 0 else f'P{idx}'}**")
-                    if st.button("D", key=f"d{idx}", disabled=is_f, type="primary" if is_d else "secondary"):
-                        st.session_state.dealer = idx; st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    if idx != 0:
-                        if st.button("F", key=f"f{idx}"):
-                            if is_f: st.session_state.folded.remove(idx)
-                            else: 
-                                st.session_state.folded.append(idx)
-                                if is_d: st.session_state.dealer = None
-                            st.rerun()
-    if st.session_state.dealer is not None:
-        if st.button("카드 입력 ➡️"): st.session_state.step = 3; st.rerun()
+    st.title(f"🪑 2. {st.session_state.stage} 상대 액션")
+    if total_p <= 6: positions = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
+    else: positions = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
+    
+    for p in positions[:st.session_state.total]:
+        if p == st.session_state.hero_pos:
+            st.warning(f"😎 {p} (Hero)")
+            continue
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        is_f = p in st.session_state.folded
+        col1.write(f"**{p}**")
+        if col2.button("Fold", key=f"f_{p}", type="primary" if is_f else "secondary"):
+            if is_f: st.session_state.folded.remove(p)
+            else: st.session_state.folded.append(p)
+            st.rerun()
+        
+        if not is_f:
+            st.session_state.villain_actions[p] = col3.selectbox("Action", ["None", "Check", "Call", "Bet/Raise", "All-in"], key=f"act_{p}")
+            
+    if st.button("카드 입력 이동 ➡️"): st.session_state.step = 3; st.rerun()
 
 elif st.session_state.step == 3:
-    st.title("🎴 핸드 선택")
-    card_picker("My Hand", st.session_state.hero_hand, 2)
+    st.title("🎴 3. 카드 입력")
+    card_picker_pro("My Hand (2장)", st.session_state.hero_hand, 2)
+    if st.session_state.stage != "Pre-flop":
+        m_c = {'Flop':3, 'Turn':4, 'River':5}.get(st.session_state.stage, 5)
+        card_picker_pro("Board Cards", st.session_state.board, m_c)
+    
     if len(st.session_state.hero_hand) == 2:
-        if st.button("분석 시작 ➡️"): st.session_state.step = 4; st.rerun()
+        if st.button("정밀 분석 실행 ➡️", type="primary"): st.session_state.step = 4; st.rerun()
 
 elif st.session_state.step == 4:
-    st.title(f"📊 {st.session_state.stage}")
-    if st.session_state.stage != "Pre-flop":
-        m_count = {'Flop':3, 'Turn':4, 'River':5}.get(st.session_state.stage, 5)
-        card_picker("Board", st.session_state.board, m_count)
+    st.title("🔍 분석 및 밸류 가이드")
+    with st.spinner('정밀 시뮬레이션 중...'):
+        equity, outs = calculate_precise_stats(st.session_state.hero_hand, st.session_state.board)
+    
+    c1, c2 = st.columns(2)
+    c1.metric("승률 (Equity)", f"{equity:.1f}%")
+    if st.session_state.stage != "River":
+        c2.metric("아우츠 (Outs)", f"{outs}개")
 
-    st.divider()
-    # [수정] Bet/Raise 버튼 통합
-    act_list = ["Check", "Call", "Bet/Raise", "All-in"]
-    acols = st.columns(4)
-    for i, act in enumerate(act_list):
-        if acols[i].button(act, type="primary" if st.session_state.last_action == act else "secondary"):
-            st.session_state.last_action = act; st.rerun()
-
-    if st.session_state.last_action == "Bet/Raise":
-        st.number_input("Amount (BB)", min_value=0.0, step=1.0)
-
-    if st.button("🔍 분석", use_container_width=True):
-        eq, outs = calculate_poker_stats(st.session_state.hero_hand, st.session_state.board)
-        st.metric("승률", f"{eq:.1f}%", help="상대 핸드 범위 대비 나의 승리 확률")
-        if len(st.session_state.board) < 5: st.metric("아우츠", f"{outs}개")
-        
-    st.divider()
-    stages = ["Pre-flop", "Flop", "Turn", "River", "End"]
-    curr_idx = stages.index(st.session_state.stage)
-    c_prev, c_next = st.columns(2)
-    if st.session_state.stage != "End":
-        if c_next.button("다음 ➡️"): st.session_state.stage = stages[curr_idx+1]; st.rerun()
+    # 전략 추천 및 밸류 가이드
+    is_agg = any(a in ["Bet/Raise", "All-in"] for a in st.session_state.villain_actions.values())
+    
+    st.subheader("💡 전략 추천")
+    if equity >= 75:
+        st.success("🔥 **밸류(Value)가 매우 높습니다.** 적극적인 베팅으로 팟 사이즈를 키우세요.")
+    elif equity >= 50:
+        if is_agg: st.warning("⚖️ 밸류는 있으나 상대의 액션이 강합니다. 콜(Call)로 조절하거나 팟 컨트롤이 필요합니다.")
+        else: st.info("✅ 주도권이 있습니다. 컨티뉴에이션 벳(C-Bet)을 고려하세요.")
+    elif equity >= 20:
+        if st.session_state.pushfold_mode: st.error("⚔️ P/F 모드: 폴드(Fold)를 권장합니다.")
+        else: st.warning("⚠️ 드로우 핸드입니다. 팟 오즈가 승률보다 높을 때만 콜하세요.")
     else:
-        if st.button("🔄 리셋"):
-            for k in list(st.session_state.keys()): del st.session_state[k]
+        st.error("❌ 승률이 매우 낮습니다. 체크-폴드(Check-Fold)를 권장합니다.")
+        
+    with st.expander("📖 포지션 레인지 가이드"):
+        st.write(f"**{st.session_state.hero_pos} 포지션 가이드:**")
+        st.write(get_open_range_guide(st.session_state.hero_pos))
+
+    st.divider()
+    col_l, col_r = st.columns(2)
+    if col_r.button("다음 라운드로 ➡️"):
+        stages = ["Pre-flop", "Flop", "Turn", "River", "End"]
+        curr = stages.index(st.session_state.stage)
+        if curr < len(stages)-1:
+            st.session_state.stage = stages[curr+1]
+            st.session_state.villain_actions = {}
+            st.session_state.step = 2
             st.rerun()
-    if c_prev.button("⬅️ 테이블"): st.session_state.step = 2; st.rerun()
+    if col_l.button("🔄 게임 리셋"):
+        for k in list(st.session_state.keys()): del st.session_state[k]
+        st.rerun()
