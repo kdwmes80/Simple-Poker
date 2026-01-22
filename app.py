@@ -1,81 +1,57 @@
 import streamlit as st
 import eval7
 
-# --- 1. 정밀 승률 계산 및 가이드 데이터 ---
+# --- 1. 정밀 계산 및 수학적 로직 ---
 def calculate_precise_stats(hero_hand, board, iters=3000):
     try:
-        if len(hero_hand) < 2: return 0, 0
+        if len(hero_hand) < 2: return 0.0, 0
         hero_c = [eval7.Card(c) for c in hero_hand]
         board_c = [eval7.Card(c) for c in board]
         win_count = 0
-        
         for _ in range(iters):
             deck = eval7.Deck()
             for c in hero_c + board_c:
                 if c in deck.cards: deck.cards.remove(c)
             deck.shuffle()
-            
             opp_cards = deck.deal(2)
             temp_board = board_c + deck.deal(5 - len(board_c))
-            
             h_s = eval7.evaluate(hero_c + temp_board)
             o_s = eval7.evaluate(opp_cards + temp_board)
-            
             if h_s > o_s: win_count += 1
             elif h_s == o_s: win_count += 0.5
-            
-        equity = (win_count / iters) * 100
-        outs = 0
-        if len(board_c) < 5:
-            current_score = eval7.evaluate(hero_c + board_c)
-            deck = eval7.Deck()
-            for c in hero_c + board_c:
-                if c in deck.cards: deck.cards.remove(c)
-            for c in deck.cards:
-                if eval7.evaluate(hero_c + board_c + [c]) > current_score:
-                    outs += 1
-        return equity, outs
-    except: return 0, 0
+        return (win_count / iters) * 100, 0
+    except: return 0.0, 0
 
-def get_open_range_guide(position):
-    ranges = {
-        "UTG": "TOP 10-12% (77+, AJs+, KQs, AJo+)",
-        "HJ": "TOP 15-18% (55+, A8s+, KTs+, QJs, ATs+)",
-        "CO": "TOP 25-30% (22+, A2s+, K8s+, Q9s+, J9s+, T9s)",
-        "BTN": "TOP 40-50% (Any Ace, Any Pair, K2s+, Q5s+, J7s+)",
-        "SB": "TOP 40-45% (신중한 플레이 필요)",
-        "BB": "방어 위주 (상대 오픈 사이즈에 따라 결정)"
-    }
-    return ranges.get(position, "표준 레인지 가이드 없음")
+def get_m_ratio_advice(stack):
+    m_ratio = stack / 1.5
+    if m_ratio <= 5: return "🔴 레드 존: Push/Fold 전용 구간입니다. 콜은 최대한 지양하세요.", "red"
+    elif m_ratio <= 10: return "🟠 오렌지 존: 공격적인 플레이가 필요합니다. 폴드 에퀴티를 활용하세요.", "orange"
+    else: return "🟢 그린 존: 스택이 넉넉합니다. 표준 GTO 전략을 따르세요.", "green"
 
 def sort_cards(card_list):
     rank_order = {'A':14, 'K':13, 'Q':12, 'J':11, 'T':10, '9':9, '8':8, '7':7, '6':6, '5':5, '4':4, '3':3, '2':2}
     return sorted(card_list, key=lambda x: rank_order.get(x[0], 0), reverse=True)
 
-# --- 2. UI 및 세션 관리 ---
-st.set_page_config(page_title="Poker Strategy Master Pro", layout="centered")
+# --- 2. UI 세션 관리 ---
+st.set_page_config(page_title="Tournament Strategy Pro", layout="centered")
 
-init_keys = {
-    'step': 1, 'hero_hand': [], 'board': [], 'folded': [], 
-    'villain_actions': {}, 'stage': "Pre-flop", 
-    'icm_mode': False, 'pushfold_mode': False, 'hero_pos': "BTN",
-    'total': 9 # total_p 에러 방지를 위해 초기값 설정
-}
-for k, v in init_keys.items():
-    if k not in st.session_state: st.session_state[k] = v
+if 'step' not in st.session_state:
+    st.session_state.update({
+        'step': 1, 'hero_hand': [], 'board': [], 'folded': [], 
+        'villain_actions': {}, 'villain_sizes': {}, 'hero_action': "None",
+        'stage': "Pre-flop", 'icm_mode': False, 'pushfold_mode': False, 
+        'hero_pos': "BTN", 'total': 9, 'hero_stack': 30.0
+    })
 
 # --- 3. 카드 선택 컴포넌트 ---
-def card_picker_pro(label, target_list, max_count):
+def card_picker_final(label, target_list, max_count):
     st.write(f"**{label}**")
-    suits = {'♠':'s', '♥':'h', '◆':'d', '♣':'c'}
-    ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
-    sel_key = f"pro_suit_{label}"
-    
+    suits = {'♠':'s', '♥':'h', '◆':'d', '♣':'c'}; ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
+    sel_key = f"suit_{label}"
     cols = st.columns(4)
-    for i, (s_name, s_val) in enumerate(suits.items()):
-        if cols[i].button(s_name, key=f"s_{label}_{s_val}", type="primary" if st.session_state.get(sel_key) == s_val else "secondary"):
-            st.session_state[sel_key] = s_val; st.rerun()
-            
+    for i, (s_n, s_v) in enumerate(suits.items()):
+        if cols[i].button(s_n, key=f"s_{label}_{s_v}", type="primary" if st.session_state.get(sel_key) == s_v else "secondary"):
+            st.session_state[sel_key] = s_v; st.rerun()
     chosen_suit = st.session_state.get(sel_key)
     if chosen_suit:
         all_used = st.session_state.hero_hand + st.session_state.board
@@ -89,102 +65,123 @@ def card_picker_pro(label, target_list, max_count):
                     elif len(target_list) < max_count: target_list.append(card)
                     st.rerun()
 
-# --- 4. 메인 단계별 로직 ---
+# --- 4. 메인 단계 ---
 
+# [상단 고정 정보 바]
 if st.session_state.step >= 3:
     h_s, b_s = sort_cards(st.session_state.hero_hand), sort_cards(st.session_state.board)
-    st.info(f"📍 포지션: **{st.session_state.hero_pos}** | 핸드: **{' '.join(h_s)}** | 보드: **{' '.join(b_s)}**")
+    st.info(f"🏟️ **{st.session_state.hero_pos}** | 스택: **{st.session_state.hero_stack}BB** | 단계: **{st.session_state.stage}** | {'ICM ON' if st.session_state.icm_mode else ''}")
 
+# STEP 1: 설정
 if st.session_state.step == 1:
-    st.title("🏟️ 1. 포지션 및 환경 설정")
-    # total_p 대신 직접 session_state.total에 할당
+    st.title("🏆 토너먼트 마스터 설정")
     st.session_state.total = st.select_slider("테이블 인원", options=range(2, 10), value=9)
-    
-    if st.session_state.total <= 6: positions = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
-    else: positions = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
-    
-    st.session_state.hero_pos = st.selectbox("나의 포지션", positions[:st.session_state.total])
-    
+    st.session_state.hero_stack = st.number_input("내 현재 스택 (BB)", min_value=1.0, value=30.0, step=1.0)
+    pos_list = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"] if st.session_state.total > 6 else ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
+    st.session_state.hero_pos = st.selectbox("나의 포지션", pos_list[:st.session_state.total])
     c1, c2 = st.columns(2)
-    st.session_state.icm_mode = c1.toggle("🏆 ICM 분석 모드")
-    st.session_state.pushfold_mode = c2.toggle("⚔️ Push/Fold 모드")
-    
-    st.caption(f"💡 현재 포지션 가이드: {get_open_range_guide(st.session_state.hero_pos)}")
-    
+    st.session_state.icm_mode = c1.toggle("🏆 ICM (머니인 압박 반영)")
+    st.session_state.pushfold_mode = c2.toggle("⚔️ Push/Fold 모드 강제")
     if st.button("설정 완료 ➡️"): st.session_state.step = 2; st.rerun()
 
+# STEP 2: 상대 액션 입력
 elif st.session_state.step == 2:
     st.title(f"🪑 2. {st.session_state.stage} 상대 액션")
-    # total_p 에러 수정: st.session_state.total 사용
-    if st.session_state.total <= 6: positions = ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
-    else: positions = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
-    
-    for p in positions[:st.session_state.total]:
-        if p == st.session_state.hero_pos:
-            st.warning(f"😎 {p} (Hero)")
-            continue
-        
-        col1, col2, col3 = st.columns([1, 1, 2])
+    pos_list = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"] if st.session_state.total > 6 else ["UTG", "HJ", "CO", "BTN", "SB", "BB"]
+    for p in pos_list[:st.session_state.total]:
+        if p == st.session_state.hero_pos: continue
+        col1, col2, col3, col4 = st.columns([1, 1, 2, 1.5])
         is_f = p in st.session_state.folded
         col1.write(f"**{p}**")
         if col2.button("Fold", key=f"f_{p}", type="primary" if is_f else "secondary"):
-            if is_f: st.session_state.folded.remove(p)
+            if is_f: st.session_state.folded.remove(p); st.session_state.villain_sizes.pop(p, None)
             else: st.session_state.folded.append(p)
             st.rerun()
-        
         if not is_f:
-            st.session_state.villain_actions[p] = col3.selectbox("Action", ["None", "Check", "Call", "Bet/Raise", "All-in"], key=f"act_{p}")
+            act = col3.selectbox("Action", ["None", "Check", "Call", "Bet/Raise", "All-in"], key=f"act_{p}")
+            st.session_state.villain_actions[p] = act
+            if act in ["Bet/Raise", "All-in"]:
+                st.session_state.villain_sizes[p] = col4.number_input("BB", min_value=0.0, key=f"sz_{p}", step=0.5)
+            else: st.session_state.villain_sizes[p] = 0.0
             
     if st.button("카드 입력 이동 ➡️"): st.session_state.step = 3; st.rerun()
 
+# STEP 3: 카드 입력
 elif st.session_state.step == 3:
-    st.title("🎴 3. 카드 입력")
-    card_picker_pro("My Hand (2장)", st.session_state.hero_hand, 2)
-    if st.session_state.stage != "Pre-flop":
-        m_c = {'Flop':3, 'Turn':4, 'River':5}.get(st.session_state.stage, 5)
-        card_picker_pro("Board Cards", st.session_state.board, m_c)
-    
-    if len(st.session_state.hero_hand) == 2:
-        if st.button("정밀 분석 실행 ➡️", type="primary"): st.session_state.step = 4; st.rerun()
-
-elif st.session_state.step == 4:
-    st.title("🔍 분석 및 밸류 가이드")
-    with st.spinner('정밀 시뮬레이션 중...'):
-        equity, outs = calculate_precise_stats(st.session_state.hero_hand, st.session_state.board)
-    
-    c1, c2 = st.columns(2)
-    c1.metric("승률 (Equity)", f"{equity:.1f}%")
-    if st.session_state.stage != "River":
-        c2.metric("아우츠 (Outs)", f"{outs}개")
-
-    is_agg = any(a in ["Bet/Raise", "All-in"] for a in st.session_state.villain_actions.values())
-    
-    st.subheader("💡 전략 추천")
-    if equity >= 75:
-        st.success("🔥 **밸류(Value)가 매우 높습니다.** 적극적인 베팅으로 팟 사이즈를 키우세요.")
-    elif equity >= 50:
-        if is_agg: st.warning("⚖️ 밸류는 있으나 상대의 액션이 강합니다. 콜(Call)로 조절하거나 팟 컨트롤이 필요합니다.")
-        else: st.info("✅ 주도권이 있습니다. 컨티뉴에이션 벳(C-Bet)을 고려하세요.")
-    elif equity >= 20:
-        if st.session_state.pushfold_mode: st.error("⚔️ P/F 모드: 폴드(Fold)를 권장합니다.")
-        else: st.warning("⚠️ 드로우 핸드입니다. 팟 오즈가 승률보다 높을 때만 콜하세요.")
+    st.title("🎴 3. 카드 및 보드 입력")
+    if st.session_state.stage == "Pre-flop":
+        card_picker_final("내 핸드 (2장)", st.session_state.hero_hand, 2)
     else:
-        st.error("❌ 승률이 매우 낮습니다. 체크-폴드(Check-Fold)를 권장합니다.")
-        
-    with st.expander("📖 포지션 레인지 가이드"):
-        st.write(f"**{st.session_state.hero_pos} 포지션 가이드:**")
-        st.write(get_open_range_guide(st.session_state.hero_pos))
+        st.success(f"내 핸드: {' '.join(sort_cards(st.session_state.hero_hand))}")
+    if st.session_state.stage != "Pre-flop":
+        m_c = {'Flop':3, 'Turn':4, 'River':5}.get(st.session_state.stage, 3)
+        card_picker_final(f"보드 카드 ({m_c}장)", st.session_state.board, m_c)
+    if len(st.session_state.hero_hand) == 2:
+        if st.button("전략 분석 실행 ➡️", type="primary"): st.session_state.step = 4; st.rerun()
+
+# STEP 4: 최종 분석 및 팟 오즈 조언
+elif st.session_state.step == 4:
+    st.title("🔍 실전 전략 분석")
+    
+    # [팟 크기 계산 로직]
+    base_pot = 1.5 # Ante + Blinds 기본값
+    villain_total_bet = sum(st.session_state.villain_sizes.values())
+    current_pot = base_pot + villain_total_bet
+    max_call_size = max(st.session_state.villain_sizes.values()) if st.session_state.villain_sizes else 0
+    
+    # 팟 오즈(필요 승률) 계산: Call / (Pot + Call)
+    pot_odds = (max_call_size / (current_pot + max_call_size)) * 100 if max_call_size > 0 else 0
+
+    # 상단 팟 오즈 대시보드
+    st.markdown(f"""
+    <div style="background-color:#1e1e1e; padding:15px; border-radius:10px; border-left: 5px solid #00ff00; margin-bottom:20px;">
+        <h4 style="margin:0; color:white;">💰 팟 정보 (Pot Odds)</h4>
+        <span style="font-size:20px; color:#00ff00;">현재 팟: <b>{current_pot:.1f} BB</b></span> | 
+        <span style="font-size:20px; color:#ff4b4b;">필요 승률: <b>{pot_odds:.1f}%</b></span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.spinner('정밀 시뮬레이션 중...'):
+        equity, _ = calculate_precise_stats(st.session_state.hero_hand, st.session_state.board)
+    
+    # 지표 시각화
+    c1, c2, c3 = st.columns(3)
+    c1.metric("실제 승률 (Equity)", f"{equity:.1f}%")
+    c2.metric("EV (기댓값)", "Positive" if equity > pot_odds else "Negative")
+    c3.metric("M-Ratio", f"{st.session_state.hero_stack/1.5:.1f}")
+
+    # [조언 섹션] - 매끄러운 조화
+    st.subheader("💡 행동 지침")
+    m_advice, m_color = get_m_ratio_advice(st.session_state.hero_stack)
+    st.markdown(f"**스택 진단:** <span style='color:{m_color};'>{m_advice}</span>", unsafe_allow_html=True)
+
+    if max_call_size > 0:
+        if equity > pot_odds + (10 if st.session_state.icm_mode else 0):
+            st.success(f"✅ **수학적 찬스**: 현재 팟 오즈({pot_odds:.1f}%) 대비 승률({equity:.1f}%)이 충분히 높습니다. **Call** 혹은 **Raise**가 수익적입니다.")
+        else:
+            st.error(f"❌ **수학적 손해**: 필요 승률보다 {pot_odds - equity:.1f}% 부족합니다. **Fold**를 권장합니다.")
+    else:
+        if equity > 60: st.success("🔥 **강력한 밸류**: 현재 매우 유리합니다. 벳을 통해 팟을 키우세요.")
+        else: st.info("⚖️ **체크 권장**: 주도권이 없거나 마진 핸드입니다. 무료로 다음 카드를 보는 것이 좋습니다.")
+
+    if st.session_state.icm_mode:
+        st.warning("🏆 **ICM 모드 활성화**: 머니인 압박으로 인해 평소보다 더 타이트한 폴드 결정이 정답일 수 있습니다.")
 
     st.divider()
+    # Hero Action & 단계 전환
+    st.subheader("나의 액션 기록")
+    h_cols = st.columns(4)
+    for i, act in enumerate(["Check", "Call", "Bet/Raise", "Fold"]):
+        if h_cols[i].button(act, key=f"h_{act}", type="primary" if st.session_state.hero_action == act else "secondary"):
+            st.session_state.hero_action = act; st.rerun()
+
     col_l, col_r = st.columns(2)
-    if col_r.button("다음 라운드로 ➡️"):
-        stages = ["Pre-flop", "Flop", "Turn", "River", "End"]
-        curr = stages.index(st.session_state.stage)
-        if curr < len(stages)-1:
-            st.session_state.stage = stages[curr+1]
-            st.session_state.villain_actions = {}
-            st.session_state.step = 2
-            st.rerun()
+    is_river = st.session_state.stage == "River"
+    if col_r.button("다음 라운드로 ➡️", disabled=is_river or st.session_state.hero_action == "Fold"):
+        stages = ["Pre-flop", "Flop", "Turn", "River"]
+        st.session_state.stage = stages[stages.index(st.session_state.stage)+1]
+        st.session_state.villain_actions, st.session_state.villain_sizes = {}, {}
+        st.session_state.hero_action = "None"; st.session_state.step = 2; st.rerun()
     if col_l.button("🔄 게임 리셋"):
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
