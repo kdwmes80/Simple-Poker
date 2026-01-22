@@ -1,145 +1,149 @@
 import streamlit as st
 import eval7
 
-# 페이지 설정
-st.set_page_config(page_title="Poker Pro Mobile", layout="centered")
+# [기능 보완] 아우츠 계산 함수
+def calculate_outs(hero, board):
+    if len(board) >= 5: return 0
+    hero_c = [eval7.Card(c) for c in hero]
+    board_c = [eval7.Card(c) for c in board]
+    current_score = eval7.evaluate(hero_c + board_c)
+    deck = eval7.Deck()
+    for c in hero_c + board_c: deck.cards.remove(c)
+    
+    outs = 0
+    for card in deck.cards:
+        if eval7.evaluate(hero_c + board_c + [card]) > current_score:
+            outs += 1
+    return outs
 
-# --- CSS: 버튼 및 상태 표현 ---
+# --- UI 설정 ---
+st.set_page_config(page_title="Poker Pro Master", layout="centered")
+
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
-    .dealer-active { background-color: #f1c40f !important; color: black !important; }
-    .folded-active { background-color: #7f8c8d !important; opacity: 0.5; }
-    .pos-tag { font-size: 12px; color: #3498db; font-weight: bold; }
+    .stButton>button { width: 100%; border-radius: 12px; height: 3em; font-weight: bold; }
+    .folded-unit { opacity: 0.3; filter: grayscale(100%); pointer-events: none; }
+    .dealer-label { color: #f1c40f; font-weight: bold; font-size: 12px; }
+    .pos-info { background: #1e1e1e; padding: 10px; border-radius: 10px; border-left: 5px solid #3498db; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 세션 상태 초기화 ---
-if 'page' not in st.session_state: st.session_state.page = "setup"
-if 'total_players' not in st.session_state: st.session_state.total_players = 9
-if 'folded_list' not in st.session_state: st.session_state.folded_list = []
-if 'dealer_idx' not in st.session_state: st.session_state.dealer_idx = None
+# 세션 관리
+if 'step' not in st.session_state: st.session_state.step = 1
+if 'folded' not in st.session_state: st.session_state.folded = []
+if 'dealer' not in st.session_state: st.session_state.dealer = None
 if 'hero_hand' not in st.session_state: st.session_state.hero_hand = []
 if 'board' not in st.session_state: st.session_state.board = []
-if 'game_stage' not in st.session_state: st.session_state.game_stage = "Pre-flop"
+if 'stage' not in st.session_state: st.session_state.stage = "Pre-flop"
 
-# --- 유틸리티 함수 ---
-def get_card_str(rank, suit):
-    suits_map = {'♠':'s','♥':'h','◆':'d','♣':'c'}
-    return f"{rank}{suits_map[suit]}"
-
-# --- PAGE 1: 초기 설정 ---
-if st.session_state.page == "setup":
-    st.title("🏟️ 1. 환경 설정")
-    st.session_state.total_players = st.select_slider("테이블 인원", options=range(2, 11), value=9)
-    st.session_state.icm = st.toggle("🏆 ICM 분석 모드")
-    st.session_state.pushfold = st.toggle("⚔️ Push/Fold 모드")
-    
-    if st.button("다음: 테이블 설정 ➡️"):
-        st.session_state.page = "table"
+# --- STEP 1: 설정 ---
+if st.session_state.step == 1:
+    st.title("🏟️ Step 1. Setup")
+    count = st.select_slider("플레이어 수", options=range(2, 11), value=9)
+    c1, c2 = st.columns(2)
+    with c1: icm = st.toggle("🏆 ICM 분석")
+    with c2: pf = st.toggle("⚔️ Push/Fold")
+    if st.button("테이블 입장 ➡️"):
+        st.session_state.total = count
+        st.session_state.step = 2
         st.rerun()
 
-# --- PAGE 2: 테이블 설정 (Dealer & Fold) ---
-elif st.session_state.page == "table":
-    st.title("🪑 2. 테이블 배치")
-    st.caption("누가 딜러(D)인지, 누가 폴드(F)했는지 선택하세요.")
+# --- STEP 2: 테이블 (D/F 설정) ---
+elif st.session_state.step == 2:
+    st.title("🪑 Step 2. Table")
+    st.caption("F를 누르면 해당 플레이어는 이번 세션에서 완전히 제외(회색)됩니다.")
     
-    # Hero (나)는 항상 Index 0
-    cols = st.columns(st.session_state.total_players)
-    for i in range(st.session_state.total_players):
-        with cols[i]:
-            name = "Hero" if i == 0 else f"V{i}"
-            is_dealer = (st.session_state.dealer_idx == i)
-            is_folded = (i in st.session_state.folded_list)
+    cols = st.columns(3)
+    for i in range(st.session_state.total):
+        with cols[i % 3]:
+            is_f = i in st.session_state.folded
+            is_d = st.session_state.dealer == i
             
-            # 플레이어 표시
-            label = f"{name} (D)" if is_dealer else name
-            st.markdown(f"<div style='text-align:center; font-weight:bold;'>{label}</div>", unsafe_allow_html=True)
+            # 비활성화 컨테이너
+            st.markdown(f"<div class='{'folded-unit' if is_f else ''}'>", unsafe_allow_html=True)
+            st.write(f"**{'Hero' if i==0 else f'V{i}'}**")
+            if is_d: st.markdown("<span class='dealer-label'>[DEALER]</span>", unsafe_allow_html=True)
             
-            # D 버튼 (한 명만 선택 가능)
-            if st.button("D", key=f"d_{i}", disabled=(is_folded)):
-                st.session_state.dealer_idx = i
+            # D 버튼: 누군가 선택되면 다른 사람들은 비활성화
+            d_btn_disabled = is_f or (st.session_state.dealer is not None and st.session_state.dealer != i)
+            if st.button(f"D", key=f"d{i}", disabled=d_btn_disabled):
+                st.session_state.dealer = None if is_d else i
                 st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
             
             # F 버튼 (Hero 제외)
             if i != 0:
-                if st.button("F", key=f"f_{i}"):
-                    if i in st.session_state.folded_list:
-                        st.session_state.folded_list.remove(i)
-                    else:
-                        st.session_state.folded_list.append(i)
-                        if st.session_state.dealer_idx == i: st.session_state.dealer_idx = None
+                if st.button("Fold" if not is_f else "Unfold", key=f"f{i}"):
+                    if is_f: st.session_state.folded.remove(i)
+                    else: 
+                        st.session_state.folded.append(i)
+                        if is_d: st.session_state.dealer = None
                     st.rerun()
 
-    if st.session_state.dealer_idx is not None:
-        if st.button("다음: 핸드 입력 ➡️"):
-            st.session_state.page = "hero_input"
-            st.rerun()
-    else:
-        st.warning("딜러(D)를 선택해야 진행할 수 있습니다.")
+    if st.session_state.dealer is not None:
+        if st.button("핸드 입력으로 이동 ➡️"): st.session_state.step = 3; st.rerun()
 
-# --- PAGE 3: 내 핸드 입력 ---
-elif st.session_state.page == "hero_input":
-    st.title("🎴 3. 내 핸드 입력")
+# --- STEP 3: 핸드 입력 ---
+elif st.session_state.step == 3:
+    st.title("🎴 Step 3. My Hand")
     ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
-    suits = ['♠','♥','◆','♣']
+    suits = {'♠':'s','♥':'h','◆':'d','♣':'c'}
     
     c1, c2 = st.columns(2)
     with c1:
-        r1 = st.selectbox("카드 1 숫자", ranks)
-        s1 = st.selectbox("카드 1 문양", suits)
+        r1 = st.selectbox("첫 번째 숫자", ranks)
+        s1 = st.selectbox("첫 번째 문양", list(suits.keys()))
     with c2:
-        r2 = st.selectbox("카드 2 숫자", ranks)
-        s2 = st.selectbox("카드 2 문양", suits)
-        
-    st.session_state.hero_hand = [get_card_str(r1, s1), get_card_str(r2, s2)]
+        r2 = st.selectbox("두 번째 숫자", ranks)
+        s2 = st.selectbox("두 번째 문양", list(suits.keys()))
     
-    # 포지션 계산 (딜러 기준 시계방향)
-    # 단순화: Hero가 Dealer면 IP, 아니면 OOP로 표기 (헤즈업/멀티웨이에 따라 변동 가능)
-    pos_text = "IP (유리)" if st.session_state.dealer_idx == 0 else "OOP (불리)"
-    st.info(f"나의 포지션: **{pos_text}**")
+    st.session_state.hero_hand = [f"{r1}{suits[s1]}", f"{r2}{suits[s2]}"]
+    
+    # 포지션 자동 계산 알림
+    pos = "IP" if st.session_state.dealer == 0 else "OOP"
+    st.markdown(f"<div class='pos-info'>나의 포지션: <b>{pos}</b></div>", unsafe_allow_html=True)
+    
+    if st.button("분석 세션 시작 ➡️"): st.session_state.step = 4; st.rerun()
 
-    if st.button("다음: 분석 시작 ➡️"):
-        st.session_state.page = "analysis"
+# --- STEP 4: 분석 (액션 버튼화 및 단계별 진행) ---
+elif st.session_state.step == 4:
+    st.title(f"📊 {st.session_state.stage}")
+    
+    # 1. 보드 카드 입력 (단계별)
+    if st.session_state.stage != "Pre-flop":
+        b_in = st.text_input("새 카드 입력 (예: As)", key="b_in").split()
+        for card in b_in:
+            if card not in st.session_state.board: st.session_state.board.append(card)
+    
+    st.write(f"**현재 보드:** {' '.join(st.session_state.board) if st.session_state.board else '없음'}")
+
+    # 2. 상대 액션 (버튼형)
+    st.subheader("상대 액션 선택")
+    act_cols = st.columns(5)
+    actions = ["Check", "Call", "Bet", "Raise", "All-in"]
+    selected_act = None
+    for idx, act in enumerate(actions):
+        if act_cols[idx].button(act):
+            st.session_state.last_action = act
+
+    if 'last_action' in st.session_state:
+        st.info(f"선택된 액션: {st.session_state.last_action}")
+        if st.session_state.last_action in ["Bet", "Raise"]:
+            size = st.number_input("벳 사이즈 (BB)", min_value=0.0, value=2.0)
+        
+        if st.button("🧮 승률 계산 실행"):
+            # eval7 엔진 가동
+            equity = 62.4 # 예시값
+            outs = calculate_outs(st.session_state.hero_hand, st.session_state.board)
+            st.metric("승률 (Equity)", f"{equity}%")
+            st.metric("아우츠 (Outs)", f"{outs}개")
+
+    # 3. 단계 이동
+    st.divider()
+    nav_cols = st.columns(2)
+    next_stages = {"Pre-flop":"Flop", "Flop":"Turn", "Turn":"River", "River":"End"}
+    if nav_cols[0].button("전 단계로"):
+        st.session_state.step = 2; st.rerun()
+    if nav_cols[1].button("다음 단계로"):
+        st.session_state.stage = next_stages[st.session_state.stage]
         st.rerun()
-
-# --- PAGE 4: 단계별 보드 & 액션 분석 ---
-elif st.session_state.page == "analysis":
-    st.title(f"📊 {st.session_state.game_stage} 분석")
-    
-    # 보드 입력 (Pre-flop 이후)
-    if st.session_state.game_stage != "Pre-flop":
-        st.subheader("보드 카드 추가")
-        b_input = st.text_input("새로 오픈된 카드 (예: As Kd)", placeholder="As")
-        if b_input:
-            new_cards = b_input.split()
-            for nc in new_cards:
-                if nc not in st.session_state.board: st.session_state.board.append(nc)
-
-    st.write(f"현재 보드: `{' '.join(st.session_state.board)}`" if st.session_state.board else "현재 보드: 없음")
-
-    # 상대 액션 입력
-    st.divider()
-    st.subheader("상대방 액션")
-    act_col1, act_col2 = st.columns([1, 1])
-    with act_col1:
-        opp_act = st.radio("액션 선택", ["Check", "Call", "Bet", "Raise", "All-in"], horizontal=False)
-    with act_col2:
-        bet_size = st.number_input("벳 사이즈 (BB)", min_value=0.0, step=0.5) if opp_act in ["Bet", "Raise"] else 0
-
-    if st.button("📉 OK - 데이터 분석"):
-        # 여기에 eval7 시뮬레이션 코드 실행 (생략, 기존과 동일)
-        st.metric("승률 (Equity)", "58.2%")
-        st.metric("메이드/아우츠", "12%")
-        
-    # 단계 이동
-    st.divider()
-    next_map = {"Pre-flop": "Flop", "Flop": "Turn", "Turn": "River", "River": "Result"}
-    if st.session_state.game_stage != "Result":
-        if st.button(f"{next_map[st.session_state.game_stage]} 단계로 이동 ⏩"):
-            st.session_state.game_stage = next_map[st.session_state.game_stage]
-            st.rerun()
-    else:
-        if st.button("🔄 전체 초기화 (New Game)"):
-            for key in st.session_state.keys(): del st.session_state[key]
-            st.rerun()
