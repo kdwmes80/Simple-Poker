@@ -1,7 +1,7 @@
 import streamlit as st
 import eval7
 
-# --- 1. 유틸리티 함수 및 로직 (맨 위로 이동) ---
+# --- 1. 유틸리티 함수 및 로직 ---
 def calculate_poker_stats(hero_hand, board):
     try:
         hero_c = [eval7.Card(c) for c in hero_hand]
@@ -37,6 +37,11 @@ def calculate_poker_stats(hero_hand, board):
     except:
         return 0, 0
 
+# 카드 정렬용 함수 (A, K, Q... 2 순서)
+def sort_cards(card_list):
+    rank_order = {'A':14, 'K':13, 'Q':12, 'J':11, 'T':10, '9':9, '8':8, '7':7, '6':6, '5':5, '4':4, '3':3, '2':2}
+    return sorted(card_list, key=lambda x: rank_order[x[0]], reverse=True)
+
 def card_grid_selector(label, target_list, max_count):
     st.subheader(label)
     ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
@@ -61,7 +66,6 @@ def card_grid_selector(label, target_list, max_count):
                     elif len(target_list) < max_count:
                         target_list.append(card)
                     st.rerun()
-    st.write(f"현재 선택: {', '.join(target_list)}")
 
 # --- 2. UI 스타일 및 세션 설정 ---
 st.set_page_config(page_title="Poker Pro Master", layout="centered")
@@ -70,7 +74,11 @@ st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 8px; height: 3.5em; font-weight: bold; }
     .folded-unit { opacity: 0.2; filter: grayscale(100%); pointer-events: none; }
-    .advice-box { padding: 15px; border-radius: 10px; margin: 10px 0; font-weight: bold; text-align: center; }
+    .status-bar { 
+        background-color: #1e2129; padding: 10px; border-radius: 10px; 
+        border: 1px solid #3498db; margin-bottom: 20px; position: sticky; top: 0; z-index: 999;
+    }
+    .card-tag { background: #34495e; padding: 2px 8px; border-radius: 5px; margin-right: 5px; font-family: monospace; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -81,7 +89,16 @@ if 'hero_hand' not in st.session_state: st.session_state.hero_hand = []
 if 'board' not in st.session_state: st.session_state.board = []
 if 'stage' not in st.session_state: st.session_state.stage = "Pre-flop"
 
-# --- 3. 메인 로직 (Step-by-Step) ---
+# --- [상단 상시 표기 바] ---
+if st.session_state.step >= 3:
+    st.markdown(f"""
+        <div class="status-bar">
+            <b>내 핸드:</b> {" ".join([f"<span class='card-tag'>{c}</span>" for c in sort_cards(st.session_state.hero_hand)]) if st.session_state.hero_hand else "선택 중..."}<br>
+            <b>보드:</b> {" ".join([f"<span class='card-tag'>{c}</span>" for c in sort_cards(st.session_state.board)]) if st.session_state.board else "없음"}
+        </div>
+    """, unsafe_allow_html=True)
+
+# --- 3. 메인 로직 ---
 
 if st.session_state.step == 1:
     st.title("🏟️ Step 1. 인원 설정")
@@ -92,26 +109,32 @@ if st.session_state.step == 1:
 
 elif st.session_state.step == 2:
     st.title("🪑 Step 2. 테이블 배치")
-    cols = st.columns(3)
-    for i in range(st.session_state.total):
-        with cols[i % 3]:
-            is_f = i in st.session_state.folded
-            is_d = st.session_state.dealer == i
-            st.markdown(f"<div class='{'folded-unit' if is_f else ''}'>", unsafe_allow_html=True)
-            st.write(f"**P{i} {'(Hero)' if i==0 else ''}**")
-            d_disabled = is_f or (st.session_state.dealer is not None and st.session_state.dealer != i)
-            if st.button(f"D", key=f"d{i}", disabled=d_disabled, type="primary" if is_d else "secondary"):
-                st.session_state.dealer = i
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-            if i != 0:
-                if st.button("Fold" if not is_f else "Unfold", key=f"f{i}"):
-                    if is_f: st.session_state.folded.remove(i)
-                    else: st.session_state.folded.append(i)
-                    st.rerun()
+    # 플레이어 번호 순서대로(0, 1, 2...) 정렬하여 배치
+    player_indices = list(range(st.session_state.total))
+    
+    for i in range(0, len(player_indices), 3):
+        cols = st.columns(3)
+        for j in range(3):
+            idx = i + j
+            if idx < len(player_indices):
+                with cols[j]:
+                    is_f = idx in st.session_state.folded
+                    is_d = st.session_state.dealer == idx
+                    st.markdown(f"<div class='{'folded-unit' if is_f else ''}'>", unsafe_allow_html=True)
+                    st.write(f"**P{idx} {'(Hero)' if idx==0 else ''}**")
+                    d_disabled = is_f or (st.session_state.dealer is not None and st.session_state.dealer != idx)
+                    if st.button(f"D", key=f"d{idx}", disabled=d_disabled, type="primary" if is_d else "secondary"):
+                        st.session_state.dealer = idx
+                        st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    if idx != 0:
+                        if st.button("Fold" if not is_f else "Unfold", key=f"f{idx}"):
+                            if is_f: st.session_state.folded.remove(idx)
+                            else: st.session_state.folded.append(idx)
+                            st.rerun()
 
     if st.session_state.dealer is not None:
-        if st.button("핸드 입력 ➡️"):
+        if st.button("핸드 입력으로 이동 ➡️"):
             st.session_state.step = 3
             st.rerun()
 
@@ -134,9 +157,10 @@ elif st.session_state.step == 4:
         eq, outs = calculate_poker_stats(st.session_state.hero_hand, st.session_state.board)
         st.metric("승률 (Equity)", f"{eq:.1f}%")
         if len(st.session_state.board) < 5: st.metric("아우츠 (Outs)", f"{outs}개")
-        if eq >= 70: st.success("🔥 유리합니다. 벨류를 키우세요!")
-        elif eq >= 45: st.warning("⚖️ 마진 상황입니다. 조심하세요.")
-        else: st.error("❌ 불리합니다. 폴드를 고려하세요.")
+        
+        if eq >= 70: st.success("🔥 아주 유리합니다!")
+        elif eq >= 45: st.warning("⚖️ 마진 상황입니다.")
+        else: st.error("❌ 불리합니다. 폴드 고려.")
 
     st.divider()
     stages = ["Pre-flop", "Flop", "Turn", "River", "Session End"]
@@ -152,6 +176,6 @@ elif st.session_state.step == 4:
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
     
-    if c_nav1.button("⬅️ 이전 단계 (테이블)"):
+    if c_nav1.button("⬅️ 테이블 설정 수정"):
         st.session_state.step = 2
         st.rerun()
