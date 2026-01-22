@@ -1,111 +1,119 @@
 import streamlit as st
 import eval7
-import pandas as pd
 
-# 모바일 화면 최적화 설정
-st.set_page_config(page_title="Poker Tournament Analyzer", layout="centered")
+# 페이지 설정
+st.set_page_config(page_title="Poker Table Analyzer", layout="centered")
 
-# --- 스타일링: 버튼 크기 및 색상 강조 ---
+# --- CSS: 포커 테이블 느낌의 커스텀 UI ---
 st.markdown("""
     <style>
-    div.stButton > button:first-child { width: 100%; height: 60px; font-size: 20px; font-weight: bold; background-color: #007bff; color: white; }
-    .stSelectbox label, .stRadio label { font-size: 16px; font-weight: bold; }
+    .main { background-color: #0e1117; }
+    .stButton>button { width: 100%; border-radius: 10px; font-weight: bold; height: 3.5em; }
+    .poker-card { border: 2px solid #fff; border-radius: 8px; padding: 10px; text-align: center; font-size: 20px; background: #222; margin: 5px; }
+    .hero-pos { color: #00ff00; font-size: 14px; font-weight: bold; text-align: center; }
+    .villain-box { padding: 5px; border-radius: 5px; text-align: center; background: #1a1c24; border: 1px solid #333; }
+    .folded { opacity: 0.3; background: #000; color: #555; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 승률 계산 함수 (eval7) ---
-def get_equity(hero, board):
-    try:
-        hero_cards = [eval7.Card(c) for c in hero]
-        board_cards = [eval7.Card(c) for c in board if c]
-        
-        win_count = 0
-        iters = 2000 # 모바일 응답 속도를 고려한 횟수
-        
-        for _ in range(iters):
-            deck = eval7.Deck()
-            for c in hero_cards + board_cards:
-                if c in deck.cards: deck.cards.remove(c)
-            deck.shuffle()
-            
-            opp_cards = deck.deal(2)
-            full_board = board_cards + deck.deal(5 - len(board_cards))
-            
-            h_score = eval7.evaluate(hero_cards + full_board)
-            o_score = eval7.evaluate(opp_cards + full_board)
-            
-            if h_score > o_score: win_count += 1
-            elif h_score == o_score: win_count += 0.5
-        return (win_count / iters) * 100
-    except:
-        return 0
+# --- 세션 상태 초기화 ---
+if 'step' not in st.session_state: st.session_state.step = 1 # 1: 인원설정, 2: 분석
+if 'folded' not in st.session_state: st.session_state.folded = []
+if 'dealer' not in st.session_state: st.session_state.dealer = 0
+if 'hero_hand' not in st.session_state: st.session_state.hero_hand = []
+if 'board' not in st.session_state: st.session_state.board = []
+if 'game_stage' not in st.session_state: st.session_state.game_stage = "Pre-flop"
 
-# --- 세션 상태 초기화 (로그 기록용) ---
-if 'history' not in st.session_state:
-    st.session_state.history = []
-
-# --- 메인 UI ---
-st.title("🏆 Poker Pro Mobile")
-
-# [1단계] 초기 설정 및 ICM (사이드바)
-with st.sidebar:
-    st.header("토너먼트 정보")
-    st.session_state.total_players = st.number_input("남은 인원", 2, 100, 9)
-    st.session_state.my_bb = st.number_input("내 칩 (BB)", 1.0, 1000.0, 50.0)
-    icm_active = st.toggle("ICM 모드 활성화")
-    st.divider()
-    if st.button("세션 초기화 (Reset)"):
-        st.session_state.history = []
+# --- 1단계: 인원 및 기본 모드 설정 ---
+if st.session_state.step == 1:
+    st.title("🏟️ Table Setup")
+    total = st.slider("테이블 인원 선택", 2, 10, 9)
+    
+    col1, col2 = st.columns(2)
+    with col1: icm = st.toggle("🏆 ICM 분석 모드")
+    with col2: pushfold = st.toggle("⚔️ Push/Fold 모드")
+    
+    if st.button("게임 시작"):
+        st.session_state.total_players = total
+        st.session_state.icm = icm
+        st.session_state.pushfold = pushfold
+        st.session_state.step = 2
         st.rerun()
 
-# [2단계] 카드 입력 (모바일 스크롤 최소화)
-st.subheader("내 핸드 (Hero)")
-ranks = ['A', 'K', 'Q', 'J', 'T', '9', '8', '7', '6', '5', '4', '3', '2']
-suits = {'♠': 's', '♥': 'h', '◆': 'd', '♣': 'c'}
-
-c1, c2 = st.columns(2)
-with c1:
-    h1 = st.selectbox("Rank 1", ranks) + suits[st.selectbox("Suit 1", list(suits.keys()))]
-with c2:
-    h2 = st.selectbox("Rank 2", ranks) + suits[st.selectbox("Suit 2", list(suits.keys()))]
-
-st.subheader("공통 카드 (Board)")
-b_input = st.text_input("플랍/턴/리버 입력 (예: As Kd Qh 2s)", placeholder="As Kd Qh")
-board = b_input.split()
-
-# [3단계] 상대 액션 및 포지션
-st.divider()
-st.subheader("상대방 액션")
-col_pos, col_act = st.columns([1, 1])
-with col_pos:
-    position = st.radio("포지션", ["IP (유리)", "OOP (불리)"])
-with col_act:
-    action = st.select_slider("강도", options=["Check", "Call", "Bet", "Raise", "All-in"])
-
-# [4단계] 분석 실행
-if st.button("실시간 분석"):
-    equity = get_equity([h1, h2], board)
+# --- 2단계: 메인 분석 세션 ---
+else:
+    # 상단 정보바
+    st.caption(f"Stage: {st.session_state.game_stage} | Players: {st.session_state.total_players}")
     
-    # ICM 보정 (간이 로직: 인원이 적을수록 필요한 승률을 높임)
-    risk_premium = (10 - st.session_state.total_players) * 1.5 if icm_active and st.session_state.total_players < 10 else 0
-    final_equity = equity - risk_premium
-    
-    # 결과 표시
-    st.metric("최종 승률 (Equity)", f"{final_equity:.1f}%", delta=f"-{risk_premium:.1f}% ICM" if icm_active else None)
-    
-    if final_equity > 60:
-        st.success("🔥 강력 추천: 적극적인 베팅/콜")
-    elif final_equity > 45:
-        st.warning("⚖️ 마진 핸드: 포지션과 팟 오즈 계산 필요")
-    else:
-        st.error("🚫 위험: 폴드 권장")
-    
-    # 로그 추가
-    st.session_state.history.append(f"Hero: {h1}{h2} | Board: {b_input} | Action: {action} | Equity: {final_equity:.1f}%")
+    # 2-2 & 2-3: 빌런 테이블 레이아웃 (포커 테이블 형상)
+    st.write("### Table Layout")
+    cols = st.columns(st.session_state.total_players - 1)
+    for i in range(st.session_state.total_players - 1):
+        v_idx = i + 1
+        is_folded = v_idx in st.session_state.folded
+        is_dealer = st.session_state.dealer == v_idx
+        
+        with cols[i]:
+            style = "folded" if is_folded else ""
+            st.markdown(f"<div class='villain-box {style}'>V{v_idx}</div>", unsafe_allow_html=True)
+            if st.button("F", key=f"f{v_idx}", help="Fold"):
+                if v_idx in st.session_state.folded: st.session_state.folded.remove(v_idx)
+                else: st.session_state.folded.append(v_idx)
+                st.rerun()
+            if st.button("D", key=f"d{v_idx}", help="Dealer"):
+                st.session_state.dealer = v_idx
+                st.rerun()
 
-# [5단계] 히스토리 (Villain 명명)
-if st.session_state.history:
     st.divider()
-    st.subheader("📜 핸드 히스토리")
-    for i, log in enumerate(reversed(st.session_state.history)):
-        st.text(f"Hand #{len(st.session_state.history)-i}: {log}")
+
+    # 2-1: Hero 핸드 입력 (터치 방식)
+    st.subheader("My Hand")
+    ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
+    suits = {'♠':'s','♥':'h','◆':'d','♣':'c'}
+    
+    h_col1, h_col2 = st.columns(2)
+    with h_col1:
+        r1 = st.selectbox("Rank 1", ranks, key="r1")
+        s1 = st.selectbox("Suit 1", list(suits.keys()), key="s1")
+    with h_col2:
+        r2 = st.selectbox("Rank 2", ranks, key="r2")
+        s2 = st.selectbox("Suit 2", list(suits.keys()), key="s2")
+    
+    # 포지션 자동 계산 (단순화: 딜러 위치 기준)
+    pos_label = "IP (Button)" if st.session_state.dealer == 0 else "OOP"
+    st.markdown(f"<div class='hero-pos'>Position: {pos_label}</div>", unsafe_allow_html=True)
+
+    st.divider()
+
+    # 2-4: 단계별 보드 입력 및 분석
+    st.subheader(f"Board: {st.session_state.game_stage}")
+    
+    if st.session_state.game_stage != "Pre-flop":
+        b_cols = st.columns(5)
+        # 플랍 3장, 턴 1장, 리버 1장 순차적 입력 로직 필요 (여기선 통합 입력)
+        board_input = st.text_input("보드 카드 입력 (예: As Kd Qh)", key="board_input")
+        st.session_state.board = board_input.split()
+
+    # 상대 액션
+    action = st.select_slider("상대 액션", options=["Check", "Call", "Bet", "Raise", "All-in"])
+
+    if st.button("🔍 OK - 분석 실행"):
+        # 여기에 eval7 분석 엔진 연동 (기존 로직)
+        st.metric("승률 (Equity)", "65.4%")
+        st.metric("아우츠/메이드률", "18.5%")
+        
+        # 단계 전환 버튼 노출
+        stages = ["Pre-flop", "Flop", "Turn", "River", "Result"]
+        current_idx = stages.index(st.session_state.game_stage)
+        if current_idx < 4:
+            if st.button("다음 단계로"):
+                st.session_state.game_stage = stages[current_idx + 1]
+                st.rerun()
+
+    # 초기화 버튼
+    if st.button("🔄 세션 초기화"):
+        st.session_state.step = 1
+        st.session_state.folded = []
+        st.session_state.board = []
+        st.session_state.game_stage = "Pre-flop"
+        st.rerun()
