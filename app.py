@@ -23,45 +23,32 @@ def calculate_precise_stats(hero_hand, board, iters=3000):
     except: return 0.0
 
 def get_positions(total):
-    """인원수 감소 시 EP(앞자리)부터 제거되는 표준 로직"""
     full_ring = ["UTG", "UTG+1", "UTG+2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]
     if total == 2: return ["BTN/SB", "BB"]
     return full_ring[-total:]
 
 def get_differentiated_advice(equity, pot_odds, stack, icm_mode, stage, hero_pos, hero_act):
-    """모드별 수학적 임계치 보정 및 전략적 조언 생성"""
     is_pf = stack <= 12
     advices = []
-    
-    # 1. 모드별 수학적 임계치(Threshold) 설정
     if is_pf:
-        threshold = pot_odds + 5.0  # 숏스택은 폴드 에퀴티 기회비용 고려
+        threshold = pot_odds + 5.0
         mode_title = "⚔️ [PUSH/FOLD STRATEGY]"
+        advices.append("- 숏스택 상황: 폴드 에퀴티를 활용한 올인 전략이 우선입니다.")
     elif icm_mode:
-        threshold = pot_odds + 10.0 # ICM은 생존 가치 가중치 부여
+        threshold = pot_odds + 10.0
         mode_title = "🏆 [ICM SURVIVAL STRATEGY]"
+        advices.append("- 생존 우선: 칩 확보보다 탈락 방지가 최우선입니다.")
     else:
-        threshold = pot_odds        # 표준 GTO 기댓값
+        threshold = pot_odds
         mode_title = "🟢 [STANDARD GTO STRATEGY]"
-
-    # 2. 상황별 특수 조언 생성
-    if is_pf:
-        advices.append("- 현재 숏스택이므로 복잡한 운영보다 단순한 Shove/Fold가 유리합니다.")
-        if hero_act == "Call":
-            advices.append("- ⚠️ **주의**: 숏스택에서 'Call'은 칩 잠식을 초래합니다. 가급적 All-in 하세요.")
     
-    if icm_mode:
-        advices.append("- 버블/머니인 구간입니다. 칩을 따는 것보다 잃지 않는 것이 10배 중요합니다.")
-        if 45 <= equity <= 55:
-            advices.append("- ⚠️ **코인플립 경고**: 승률 50% 부근의 승부는 ICM 관점에서 매우 위험합니다.")
-
     if hero_pos in ["SB", "BB"] and stage != "Pre-flop":
-        advices.append("- 📍 **OOP 상황**: 포지션이 불리하므로 체크로 정보를 먼저 파악하세요.")
-
+        advices.append("- 📍 OOP: 포지션이 불리하므로 방어적인 체크-콜 레인지를 구성하세요.")
+    
     return advices, threshold, mode_title
 
-# --- 2. UI 세션 및 초기화 ---
-st.set_page_config(page_title="Tournament Strategy Pro", layout="centered")
+# --- 2. UI 세션 관리 ---
+st.set_page_config(page_title="Pro Poker Advisor", layout="centered")
 
 if 'step' not in st.session_state:
     st.session_state.update({
@@ -75,54 +62,51 @@ if 'step' not in st.session_state:
 def display_dashboard(current_total_pot, pot_odds):
     stack = st.session_state.hero_stack
     mode_color = "#ff4b4b" if stack <= 12 else ("#ffcc00" if st.session_state.icm_mode else "#28a745")
-    mode_text = "PUSH/FOLD" if stack <= 12 else ("ICM SURVIVAL" if st.session_state.icm_mode else "STANDARD GTO")
-    
     st.markdown(f"""
         <div style="background-color:{mode_color}; padding:10px; border-radius:8px; text-align:center; color:white; font-weight:bold; margin-bottom:15px;">
-            MODE: {mode_text} (Stack: {stack:.1f} BB)
+            STAGE: {st.session_state.stage} | STACK: {stack:.1f} BB
         </div>
         <div style="background-color:#1e1e1e; padding:20px; border-radius:12px; border: 1px solid #444; margin-bottom:20px;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <div>
-                    <small style="color:#888;">MY HAND / BOARD</small><br>
-                    <span style="font-size:20px; color:white;">🃏 {" ".join(st.session_state.hero_hand) if st.session_state.hero_hand else "?? ??"}</span>
-                    <span style="margin-left:12px; color:#58a6ff; font-weight:bold;">{" ".join(st.session_state.board) if st.session_state.board else "---"}</span>
+                    <small style="color:#888;">CURRENT POT</small><br>
+                    <span style="font-size:24px; color:#4caf50; font-weight:bold;">{current_total_pot:.1f} BB</span>
                 </div>
                 <div style="text-align:right;">
-                    <small style="color:#888;">TOTAL POT / POT ODDS</small><br>
-                    <span style="font-size:20px; color:#4caf50;">{current_total_pot:.1f} BB</span> | 
-                    <span style="font-size:20px; color:#f44336;">{pot_odds:.1f}%</span>
+                    <small style="color:#888;">POT ODDS (REQ. EQ)</small><br>
+                    <span style="font-size:24px; color:#f44336; font-weight:bold;">{pot_odds:.1f}%</span>
                 </div>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-# --- 4. 단계별 로직 ---
+# --- 4. 메인 단계 로직 ---
 
+# STEP 1: 설정
 if st.session_state.step == 1:
-    st.title("🏆 Setup Strategy Environment")
-    col1, col2 = st.columns(2)
-    with col1:
+    st.title("🏆 Tournament Setup")
+    c1, c2 = st.columns(2)
+    with c1:
         st.session_state.hero_stack = st.number_input("내 스택 (BB)", min_value=1.0, value=30.0)
-        st.session_state.total = st.select_slider("테이블 인원", options=range(2, 10), value=9)
-    with col2:
+        st.session_state.total = st.select_slider("인원수", options=range(2, 10), value=9)
+    with c2:
         p_list = get_positions(st.session_state.total)
         st.session_state.hero_pos = st.selectbox("나의 포지션", p_list, index=max(0, len(p_list)-3))
-        st.session_state.icm_mode = st.toggle("ICM/버블 모드 활성화")
+        st.session_state.icm_mode = st.toggle("ICM 모드 활성화")
     if st.button("게임 시작 ➡️"): st.session_state.step = 2; st.rerun()
 
+# STEP 2: 액션 입력 (순서 변경됨)
 elif st.session_state.step == 2:
-    st.title(f"🎮 {st.session_state.stage} Actions")
+    st.title(f"🎰 Step 1: {st.session_state.stage} Actions")
     p_list = get_positions(st.session_state.total)
     
-    # 정밀 팟 계산 로직
     current_round_bets = sum(st.session_state.villain_sizes.values()) + st.session_state.hero_bet_size
-    current_total_pot = st.session_state.acc_pot + current_round_bets
+    temp_total_pot = st.session_state.acc_pot + current_round_bets
     max_v_bet = max(st.session_state.villain_sizes.values()) if st.session_state.villain_sizes else 0
     to_call = max(0, max_v_bet - st.session_state.hero_bet_size)
-    pot_odds = (to_call / (current_total_pot + to_call)) * 100 if to_call > 0 else 0
+    pot_odds = (to_call / (temp_total_pot + to_call)) * 100 if to_call > 0 else 0
     
-    display_dashboard(current_total_pot, pot_odds)
+    display_dashboard(temp_total_pot, pot_odds)
     
     for p in p_list:
         c1, c2, c3, c4 = st.columns([1, 1, 2, 1.5])
@@ -130,11 +114,11 @@ elif st.session_state.step == 2:
             c1.warning("**HERO**")
             st.session_state.hero_action = c3.selectbox("내 액션", ["None", "Check", "Call", "Bet/Raise", "Fold"], key="h_a")
             if st.session_state.hero_action == "Bet/Raise":
-                st.session_state.hero_bet_size = c4.number_input("사이즈(BB)", min_value=0.0, step=0.5, key="h_s")
+                st.session_state.hero_bet_size = c4.number_input("BB", min_value=0.0, step=0.5, key="h_s")
             elif st.session_state.hero_action == "Call": st.session_state.hero_bet_size = max_v_bet
             else: st.session_state.hero_bet_size = 0.0
             continue
-            
+        
         is_f = p in st.session_state.folded
         c1.write(f"**{p}**")
         if c2.button("Fold", key=f"f_{p}", type="primary" if is_f else "secondary"):
@@ -142,24 +126,24 @@ elif st.session_state.step == 2:
             else: st.session_state.folded.append(p); st.session_state.villain_sizes[p] = 0.0
             st.rerun()
         if not is_f:
-            v_act = c3.selectbox("액션", ["None", "Check", "Call", "Bet/Raise", "All-in"], key=f"v_a_{p}")
+            v_act = c3.selectbox("상대 액션", ["None", "Check", "Call", "Bet/Raise", "All-in"], key=f"v_a_{p}")
             if v_act in ["Bet/Raise", "All-in"]:
                 st.session_state.villain_sizes[p] = c4.number_input("BB", min_value=0.0, key=f"v_s_{p}", step=0.5, value=st.session_state.villain_sizes.get(p, 0.0))
 
-    if st.button("분석 및 카드 입력 ➡️"):
-        st.session_state.acc_pot = current_total_pot
+    if st.button("액션 확정 및 카드 입력 ➡️"):
+        st.session_state.acc_pot = temp_total_pot
         st.session_state.step = 3; st.rerun()
 
+# STEP 3: 카드 입력 및 분석 (순서 변경됨)
 elif st.session_state.step == 3:
-    st.title("📊 Analysis & Recommendation")
+    st.title(f"🃏 Step 2: {st.session_state.stage} Cards & Analysis")
     
-    # 팟 오즈 최종 확정
+    # 분석용 최종 팟 오즈 계산
     max_v = max(st.session_state.villain_sizes.values()) if st.session_state.villain_sizes else 0
     to_call = max(0, max_v - st.session_state.hero_bet_size)
     final_pot_odds = (to_call / (st.session_state.acc_pot + to_call)) * 100 if to_call > 0 else 0
     display_dashboard(st.session_state.acc_pot, final_pot_odds)
 
-    # 카드 선택기
     c1, c2 = st.columns(2)
     def card_picker(label, target_list, max_cnt):
         st.write(f"**{label}**")
@@ -190,28 +174,33 @@ elif st.session_state.step == 3:
             m_c = {'Flop':3, 'Turn':4, 'River':5}.get(st.session_state.stage, 3)
             card_picker(f"보드 ({m_c}장)", st.session_state.board, m_c)
 
-    if len(st.session_state.hero_hand) == 2:
+    # 모든 카드가 입력되었을 때만 분석 실행
+    ready_to_calc = (len(st.session_state.hero_hand) == 2) and (st.session_state.stage == "Pre-flop" or len(st.session_state.board) >= {'Flop':3, 'Turn':4, 'River':5}.get(st.session_state.stage, 0))
+
+    if ready_to_calc:
         st.divider()
-        equity = calculate_precise_stats(st.session_state.hero_hand, st.session_state.board)
+        with st.spinner("EV 및 승률 시뮬레이션 중..."):
+            equity = calculate_precise_stats(st.session_state.hero_hand, st.session_state.board)
+        
         advices, threshold, mode_title = get_differentiated_advice(equity, final_pot_odds, st.session_state.hero_stack, st.session_state.icm_mode, st.session_state.stage, st.session_state.hero_pos, st.session_state.hero_action)
         
-        st.subheader(mode_title)
-        res_col1, res_col2 = st.columns([1, 2])
-        res_col1.metric("실제 승률 (Equity)", f"{equity:.1f}%", delta=f"{equity-threshold:.1f}% vs Target")
-        with res_col2:
-            st.write(f"**수학적 목표치:** {threshold:.1f}% (보정치 포함)")
+        st.subheader(f"🎯 분석 결과: {mode_title}")
+        res1, res2 = st.columns([1, 2])
+        res1.metric("실제 승률", f"{equity:.1f}%", delta=f"{equity-threshold:.1f}%")
+        with res2:
+            st.write(f"**필요 승률:** {threshold:.1f}%")
             for a in advices: st.info(a)
         
-        if equity >= threshold: st.success("✅ **결론: 수학적 이득 구간 (Positive EV / Survival Advantage)**")
-        else: st.error("🛑 **결론: 수학적 손해 구간 (Negative EV / High Risk)**")
+        if equity >= threshold: st.success("✅ **추천 액션: 플레이 유지 (Positive EV)**")
+        else: st.error("🛑 **추천 액션: 폴드 고려 (Negative EV)**")
 
-        st.divider()
-        cl, cr = st.columns(2)
-        if cr.button("다음 라운드로 ➡️", disabled=st.session_state.stage == "River" or st.session_state.hero_action == "Fold"):
-            st.session_state.stage = ["Pre-flop", "Flop", "Turn", "River"][["Pre-flop", "Flop", "Turn", "River"].index(st.session_state.stage)+1]
-            st.session_state.villain_sizes = {}
-            st.session_state.hero_action, st.session_state.hero_bet_size = "None", 0.0
-            st.session_state.step = 2; st.rerun()
-        if cl.button("🔄 게임 리셋"):
-            for k in list(st.session_state.keys()): del st.session_state[k]
-            st.rerun()
+    st.divider()
+    cl, cr = st.columns(2)
+    if cr.button("다음 라운드로 ➡️", disabled=st.session_state.stage == "River" or st.session_state.hero_action == "Fold"):
+        st.session_state.stage = ["Pre-flop", "Flop", "Turn", "River"][["Pre-flop", "Flop", "Turn", "River"].index(st.session_state.stage)+1]
+        st.session_state.villain_sizes = {}
+        st.session_state.hero_action, st.session_state.hero_bet_size = "None", 0.0
+        st.session_state.step = 2; st.rerun()
+    if cl.button("🔄 게임 리셋"):
+        for k in list(st.session_state.keys()): del st.session_state[k]
+        st.rerun()
