@@ -1,34 +1,55 @@
 import streamlit as st
 import eval7
 
-# [기능 보완] 아우츠 계산 함수
-def calculate_outs(hero, board):
-    if len(board) >= 5: return 0
-    hero_c = [eval7.Card(c) for c in hero]
-    board_c = [eval7.Card(c) for c in board]
-    current_score = eval7.evaluate(hero_c + board_c)
-    deck = eval7.Deck()
-    for c in hero_c + board_c: deck.cards.remove(c)
-    
-    outs = 0
-    for card in deck.cards:
-        if eval7.evaluate(hero_c + board_c + [card]) > current_score:
-            outs += 1
-    return outs
+# --- 핵심 로직: 승률 및 아우츠 계산 ---
+def calculate_poker_stats(hero_hand, board):
+    try:
+        hero_c = [eval7.Card(c) for c in hero_hand]
+        board_c = [eval7.Card(c) for c in board]
+        
+        win_count = 0
+        iters = 1000 # 모바일 속도를 위해 1000회 세팅
+        for _ in range(iters):
+            deck = eval7.Deck()
+            for c in hero_c + board_c:
+                if c in deck.cards: deck.cards.remove(c)
+            deck.shuffle()
+            
+            opp_cards = deck.deal(2)
+            temp_board = board_c + deck.deal(5 - len(board_c))
+            
+            h_s = eval7.evaluate(hero_c + temp_board)
+            o_s = eval7.evaluate(opp_cards + temp_board)
+            if h_s > o_s: win_count += 1
+            elif h_s == o_s: win_count += 0.5
+            
+        equity = (win_count / iters) * 100
+        outs = 0
+        if len(board_c) < 5:
+            current_score = eval7.evaluate(hero_c + board_c)
+            deck = eval7.Deck()
+            for c in hero_c + board_c: 
+                if c in deck.cards: deck.cards.remove(c)
+            for c in deck.cards:
+                if eval7.evaluate(hero_c + board_c + [c]) > current_score:
+                    outs += 1
+        return equity, outs
+    except:
+        return 0, 0
 
 # --- UI 설정 ---
 st.set_page_config(page_title="Poker Pro Master", layout="centered")
 
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 12px; height: 3em; font-weight: bold; }
-    .folded-unit { opacity: 0.3; filter: grayscale(100%); pointer-events: none; }
-    .dealer-label { color: #f1c40f; font-weight: bold; font-size: 12px; }
-    .pos-info { background: #1e1e1e; padding: 10px; border-radius: 10px; border-left: 5px solid #3498db; }
+    .stButton>button { width: 100%; border-radius: 8px; height: 3em; font-weight: bold; }
+    .folded-unit { opacity: 0.2; filter: grayscale(100%); pointer-events: none; }
+    .card-active { background-color: #2e7d32 !important; color: white !important; }
+    .advice-box { padding: 15px; border-radius: 10px; margin: 10px 0; font-weight: bold; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
-# 세션 관리
+# 세션 상태 초기화
 if 'step' not in st.session_state: st.session_state.step = 1
 if 'folded' not in st.session_state: st.session_state.folded = []
 if 'dealer' not in st.session_state: st.session_state.dealer = None
@@ -36,114 +57,107 @@ if 'hero_hand' not in st.session_state: st.session_state.hero_hand = []
 if 'board' not in st.session_state: st.session_state.board = []
 if 'stage' not in st.session_state: st.session_state.stage = "Pre-flop"
 
+# 모든 카드 리스트 생성 (중복 방지용)
+ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
+suits = {'♠':'s','♥':'h','◆':'d','♣':'c'}
+all_deck = [f"{r}{s_v}" for r in ranks for s_v in suits.values()]
+
 # --- STEP 1: 설정 ---
 if st.session_state.step == 1:
-    st.title("🏟️ Step 1. Setup")
-    count = st.select_slider("플레이어 수", options=range(2, 11), value=9)
-    c1, c2 = st.columns(2)
-    with c1: icm = st.toggle("🏆 ICM 분석")
-    with c2: pf = st.toggle("⚔️ Push/Fold")
-    if st.button("테이블 입장 ➡️"):
-        st.session_state.total = count
+    st.title("🏟️ Step 1. 인원 설정")
+    st.session_state.total = st.select_slider("테이블 인원", options=range(2, 11), value=9)
+    if st.button("테이블 생성 ➡️"):
         st.session_state.step = 2
         st.rerun()
 
-# --- STEP 2: 테이블 (D/F 설정) ---
+# --- STEP 2: 테이블 배치 ---
 elif st.session_state.step == 2:
-    st.title("🪑 Step 2. Table")
-    st.caption("F를 누르면 해당 플레이어는 이번 세션에서 완전히 제외(회색)됩니다.")
-    
+    st.title("🪑 Step 2. 테이블 배치")
     cols = st.columns(3)
     for i in range(st.session_state.total):
         with cols[i % 3]:
             is_f = i in st.session_state.folded
             is_d = st.session_state.dealer == i
-            
-            # 비활성화 컨테이너
             st.markdown(f"<div class='{'folded-unit' if is_f else ''}'>", unsafe_allow_html=True)
-            st.write(f"**{'Hero' if i==0 else f'V{i}'}**")
-            if is_d: st.markdown("<span class='dealer-label'>[DEALER]</span>", unsafe_allow_html=True)
-            
-            # D 버튼: 누군가 선택되면 다른 사람들은 비활성화
-            d_btn_disabled = is_f or (st.session_state.dealer is not None and st.session_state.dealer != i)
-            if st.button(f"D", key=f"d{i}", disabled=d_btn_disabled):
-                st.session_state.dealer = None if is_d else i
+            st.write(f"**P{i} {'(Hero)' if i==0 else ''}**")
+            d_disabled = is_f or (st.session_state.dealer is not None and st.session_state.dealer != i)
+            if st.button(f"D", key=f"d{i}", disabled=d_disabled, type="primary" if is_d else "secondary"):
+                st.session_state.dealer = i
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
-            
-            # F 버튼 (Hero 제외)
             if i != 0:
                 if st.button("Fold" if not is_f else "Unfold", key=f"f{i}"):
                     if is_f: st.session_state.folded.remove(i)
-                    else: 
-                        st.session_state.folded.append(i)
-                        if is_d: st.session_state.dealer = None
+                    else: st.session_state.folded.append(i); 
                     st.rerun()
 
     if st.session_state.dealer is not None:
-        if st.button("핸드 입력으로 이동 ➡️"): st.session_state.step = 3; st.rerun()
+        if st.button("핸드 입력 ➡️"): st.session_state.step = 3; st.rerun()
 
-# --- STEP 3: 핸드 입력 ---
+# --- STEP 3 & 4 통합 카드 선택 컴포넌트 ---
+def card_grid_selector(label, target_list, max_count):
+    st.subheader(label)
+    used_cards = st.session_state.hero_hand + st.session_state.board
+    
+    # 탭으로 문양 분류
+    tab_s = st.tabs(["♠", "♥", "◆", "♣"])
+    for i, s_v in enumerate(suits.values()):
+        with tab_s[i]:
+            cols = st.columns(7)
+            for j, r in enumerate(ranks):
+                card = f"{r}{s_v}"
+                is_used = card in used_cards
+                is_selected = card in target_list
+                
+                btn_label = f"{r}{list(suits.keys())[i]}"
+                if cols[j % 7].button(btn_label, key=f"sel_{label}_{card}", 
+                                      disabled=is_used and not is_selected,
+                                      type="primary" if is_selected else "secondary"):
+                    if is_selected:
+                        target_list.remove(card)
+                    elif len(target_list) < max_count:
+                        target_list.append(card)
+                    st.rerun()
+    st.write(f"선택됨: {', '.join(target_list)}")
+
+# --- STEP 3: 내 핸드 입력 (버튼식) ---
 elif st.session_state.step == 3:
-    st.title("🎴 Step 3. My Hand")
-    ranks = ['A','K','Q','J','T','9','8','7','6','5','4','3','2']
-    suits = {'♠':'s','♥':'h','◆':'d','♣':'c'}
+    st.title("🎴 Step 3. 내 핸드 선택")
+    card_grid_selector("My Hand (2장)", st.session_state.hero_hand, 2)
     
-    c1, c2 = st.columns(2)
-    with c1:
-        r1 = st.selectbox("첫 번째 숫자", ranks)
-        s1 = st.selectbox("첫 번째 문양", list(suits.keys()))
-    with c2:
-        r2 = st.selectbox("두 번째 숫자", ranks)
-        s2 = st.selectbox("두 번째 문양", list(suits.keys()))
-    
-    st.session_state.hero_hand = [f"{r1}{suits[s1]}", f"{r2}{suits[s2]}"]
-    
-    # 포지션 자동 계산 알림
-    pos = "IP" if st.session_state.dealer == 0 else "OOP"
-    st.markdown(f"<div class='pos-info'>나의 포지션: <b>{pos}</b></div>", unsafe_allow_html=True)
-    
-    if st.button("분석 세션 시작 ➡️"): st.session_state.step = 4; st.rerun()
+    if len(st.session_state.hero_hand) == 2:
+        if st.button("분석 시작 ➡️"): st.session_state.step = 4; st.rerun()
 
-# --- STEP 4: 분석 (액션 버튼화 및 단계별 진행) ---
+# --- STEP 4: 분석 세션 (보드 버튼식 및 중복 차단) ---
 elif st.session_state.step == 4:
     st.title(f"📊 {st.session_state.stage}")
     
-    # 1. 보드 카드 입력 (단계별)
     if st.session_state.stage != "Pre-flop":
-        b_in = st.text_input("새 카드 입력 (예: As)", key="b_in").split()
-        for card in b_in:
-            if card not in st.session_state.board: st.session_state.board.append(card)
-    
-    st.write(f"**현재 보드:** {' '.join(st.session_state.board) if st.session_state.board else '없음'}")
+        max_b = 3 if st.session_state.stage == "Flop" else (4 if st.session_state.stage == "Turn" else 5)
+        card_grid_selector(f"Board Cards ({max_b}장)", st.session_state.board, max_b)
 
-    # 2. 상대 액션 (버튼형)
-    st.subheader("상대 액션 선택")
-    act_cols = st.columns(5)
-    actions = ["Check", "Call", "Bet", "Raise", "All-in"]
-    selected_act = None
-    for idx, act in enumerate(actions):
-        if act_cols[idx].button(act):
-            st.session_state.last_action = act
-
-    if 'last_action' in st.session_state:
-        st.info(f"선택된 액션: {st.session_state.last_action}")
-        if st.session_state.last_action in ["Bet", "Raise"]:
-            size = st.number_input("벳 사이즈 (BB)", min_value=0.0, value=2.0)
-        
-        if st.button("🧮 승률 계산 실행"):
-            # eval7 엔진 가동
-            equity = 62.4 # 예시값
-            outs = calculate_outs(st.session_state.hero_hand, st.session_state.board)
-            st.metric("승률 (Equity)", f"{equity}%")
-            st.metric("아우츠 (Outs)", f"{outs}개")
-
-    # 3. 단계 이동
     st.divider()
-    nav_cols = st.columns(2)
-    next_stages = {"Pre-flop":"Flop", "Flop":"Turn", "Turn":"River", "River":"End"}
-    if nav_cols[0].button("전 단계로"):
+    if st.button("🔍 실시간 데이터 분석"):
+        eq, outs = calculate_poker_stats(st.session_state.hero_hand, st.session_state.board)
+        st.metric("승률 (Equity)", f"{eq:.1f}%")
+        if len(st.session_state.board) < 5: st.metric("아우츠 (Outs)", f"{outs}개")
+        
+        if eq >= 70: st.success("🔥 유리합니다. 벨류를 키우세요!")
+        elif eq >= 45: st.warning("⚖️ 마진 상황입니다. 조심하세요.")
+        else: st.error("❌ 불리합니다. 폴드를 고려하세요.")
+
+    st.divider()
+    stages = ["Pre-flop", "Flop", "Turn", "River", "Session End"]
+    curr_idx = stages.index(st.session_state.stage)
+    
+    c_nav1, c_nav2 = st.columns(2)
+    if st.session_state.stage != "Session End":
+        if c_nav2.button("다음 단계 ➡️"):
+            st.session_state.stage = stages[curr_idx+1]
+            st.rerun()
+    else:
+        if st.button("🔄 전체 초기화 (Reset)"):
+            for key in st.session_state.keys(): del st.session_state[key]
+            st.rerun()
+    if c_nav1.button("⬅️ 이전 단계"):
         st.session_state.step = 2; st.rerun()
-    if nav_cols[1].button("다음 단계로"):
-        st.session_state.stage = next_stages[st.session_state.stage]
-        st.rerun()
